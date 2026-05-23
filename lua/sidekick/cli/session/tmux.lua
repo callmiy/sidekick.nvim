@@ -9,6 +9,7 @@ M.__index = M
 
 local PANE_FORMAT =
   "#{session_id}:#{pane_id}:#{pane_pid}:#{session_name}:#{?pane_current_path,#{pane_current_path},#{pane_start_path}}"
+local SESSION_ID_PATTERN = "(%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x)"
 
 ---@param pane_id string
 ---@return string?
@@ -74,13 +75,52 @@ local function codex_title_from_state(session_id)
   return title and title ~= "" and single_line(title) or nil
 end
 
+---@param path string
+---@return string?
+local function codex_session_id_from_path(path)
+  return path:match("rollout%-.+%-" .. SESSION_ID_PATTERN .. "%.jsonl$")
+end
+
+---@param pid number
+---@return string?
+local function codex_session_id_from_proc(pid)
+  local fd_dir = "/proc/" .. pid .. "/fd"
+  local fd = vim.uv.fs_scandir(fd_dir)
+  if not fd then
+    return
+  end
+
+  while true do
+    local name = vim.uv.fs_scandir_next(fd)
+    if not name then
+      return
+    end
+    local target = vim.uv.fs_readlink(fd_dir .. "/" .. name)
+    local session_id = target and codex_session_id_from_path(target)
+    if session_id then
+      return session_id
+    end
+  end
+end
+
+---@param pids integer[]
+---@return string?
+local function codex_session_id_from_pids(pids)
+  for _, pid in ipairs(pids) do
+    local session_id = codex_session_id_from_proc(pid)
+    if session_id then
+      return session_id
+    end
+  end
+end
+
 ---@param lines string[]
 ---@return string?
 local function codex_session_id(lines)
   for i = #lines, 1, -1 do
     local line = lines[i]
     if line:find("Session:", 1, true) then
-      local session_id = line:match("(%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x)")
+      local session_id = line:match(SESSION_ID_PATTERN)
       if session_id then
         return session_id
       end
@@ -106,17 +146,18 @@ local function codex_thread_name(lines)
   end
 end
 
----@param pane_id string
+---@param opts {pane_id:string,pids?:integer[]}
 ---@return {session_id?:string,title?:string}
-local function codex_thread_info(pane_id)
-  local lines = Util.exec({ "tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-200" }, { notify = false })
-  if not lines then
-    return {}
+local function codex_thread_info(opts)
+  local session_id = opts.pids and codex_session_id_from_pids(opts.pids)
+  local lines
+  if not session_id then
+    lines = Util.exec({ "tmux", "capture-pane", "-p", "-t", opts.pane_id, "-S", "-200" }, { notify = false })
+    session_id = lines and codex_session_id(lines) or nil
   end
-  local session_id = codex_session_id(lines)
   return {
     session_id = session_id,
-    title = (session_id and codex_title_from_state(session_id)) or codex_thread_name(lines),
+    title = (session_id and codex_title_from_state(session_id)) or (lines and codex_thread_name(lines) or nil),
   }
 end
 
@@ -172,7 +213,12 @@ function M:spawn(cmd)
     self.tmux_pane_id = pane.id
 
     self.mux_session = pane_display_name(pane.id) or pane.session_name
-    local codex = self.tool.name == "codex" and codex_thread_info(pane.id) or {}
+    local pids
+    if self.tool.name == "codex" then
+      local Procs = require("sidekick.cli.procs")
+      pids = Procs.pids(pane.pid)
+    end
+    local codex = self.tool.name == "codex" and codex_thread_info({ pane_id = pane.id, pids = pids }) or {}
     self.codex_session_id = codex.session_id
     self.title = codex.title
     self.tmux_pid = pane.pid
@@ -250,7 +296,7 @@ function M.sessions()
         if tool:is_proc(proc) then
           local pids = Procs.pids(pane.pid)
           vim.list_extend(pids, clients[pane.session_id] or {})
-          local codex = tool.name == "codex" and codex_thread_info(pane.id) or {}
+          local codex = tool.name == "codex" and codex_thread_info({ pane_id = pane.id, pids = pids }) or {}
 
           ret[#ret + 1] = {
             id = pane.skid,
@@ -317,6 +363,8 @@ end
 
 M._test = {
   codex_session_id = codex_session_id,
+  codex_session_id_from_path = codex_session_id_from_path,
+  codex_session_id_from_proc = codex_session_id_from_proc,
   codex_thread_name = codex_thread_name,
   codex_title_from_state = codex_title_from_state,
   decode_hex = decode_hex,

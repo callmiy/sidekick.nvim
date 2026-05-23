@@ -26,6 +26,19 @@ describe("tmux codex metadata", function()
     )
   end)
 
+  it("extracts codex session id from rollout path", function()
+    assert.are.equal(
+      "019e5573-f54f-7e50-ad99-e5491082a4c4",
+      Tmux._test.codex_session_id_from_path(
+        "/home/user/.codex/sessions/2026/05/23/rollout-2026-05-23T11-28-43-019e5573-f54f-7e50-ad99-e5491082a4c4.jsonl"
+      )
+    )
+  end)
+
+  it("ignores non-rollout paths when extracting codex session id", function()
+    assert.is_nil(Tmux._test.codex_session_id_from_path("/home/user/.codex/state_5.sqlite"))
+  end)
+
   it("extracts thread name from status output", function()
     assert.are.equal(
       "sidekick.nvim",
