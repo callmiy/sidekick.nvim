@@ -116,6 +116,12 @@ function M.format(state, picker)
     else
       ret[#ret + 1] = { vim.fn.fnamemodify(state.session.cwd, ":p:~"), "Directory" }
     end
+    if state.session.title and state.session.title ~= "" then
+      local title = ("[%s]"):format(state.session.title)
+      local min_width = picker and 70 or 60
+      ret[#ret + 1] = { string.rep(" ", math.max(2, min_width - len)) }
+      ret[#ret + 1] = { title, "Title" }
+    end
   end
   return ret
 end

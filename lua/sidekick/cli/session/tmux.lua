@@ -10,6 +10,24 @@ M.__index = M
 local PANE_FORMAT =
   "#{session_id}:#{pane_id}:#{pane_pid}:#{session_name}:#{?pane_current_path,#{pane_current_path},#{pane_start_path}}"
 
+---@param pane_id string
+---@return string? display_name, string? title
+local function pane_info(pane_id)
+  local lines = Util.exec({
+    "tmux",
+    "display-message",
+    "-p",
+    "-t",
+    pane_id,
+    "#{session_name}:#{window_index}.#{pane_index}::#{pane_title}",
+  }, { notify = false })
+  if not lines or not lines[1] then
+    return
+  end
+  local display_name, title = lines[1]:match("^(.-)::(.*)$")
+  return display_name and display_name:gsub("%s+$", ""), title
+end
+
 ---@return sidekick.cli.terminal.Cmd?
 function M:attach()
   if self.sid == self.mux_session then
@@ -60,17 +78,10 @@ function M:spawn(cmd)
   if pane then
     self.id = pane.skid
     self.tmux_pane_id = pane.id
-    
-    local display_name = pane.session_name
-    local lines = Util.exec({
-      "tmux", "display-message", "-p", "-t", pane.id,
-      "#{session_name}:#{window_index}.#{pane_index}"
-    }, { notify = false })
-    if lines and lines[1] then
-      display_name = lines[1]:gsub("%s+$", "")
-    end
-    
-    self.mux_session = display_name
+
+    local display_name, title = pane_info(pane.id)
+    self.mux_session = display_name or pane.session_name
+    self.title = title
     self.tmux_pid = pane.pid
     self.started = true
   end
@@ -146,15 +157,8 @@ function M.sessions()
         if tool:is_proc(proc) then
           local pids = Procs.pids(pane.pid)
           vim.list_extend(pids, clients[pane.session_id] or {})
-          
-          local display_name = pane.session_name
-          local lines = Util.exec({
-            "tmux", "display-message", "-p", "-t", pane.id,
-            "#{session_name}:#{window_index}.#{pane_index}"
-          }, { notify = false })
-          if lines and lines[1] then
-            display_name = lines[1]:gsub("%s+$", "")
-          end
+
+          local display_name, title = pane_info(pane.id)
 
           ret[#ret + 1] = {
             id = pane.skid,
@@ -162,7 +166,8 @@ function M.sessions()
             tool = tool,
             tmux_pane_id = pane.id,
             tmux_pid = pane.pid,
-            mux_session = display_name,
+            mux_session = display_name or pane.session_name,
+            title = title,
             pids = pids,
           }
           return true

@@ -31,7 +31,7 @@ local function update_cli_status()
     if session.parent and session.parent.mux_session then
       mux_session = session.parent.mux_session
     end
-    
+
     cli_sessions[id] = {
       id = session.id,
       tool = session.tool.name,
