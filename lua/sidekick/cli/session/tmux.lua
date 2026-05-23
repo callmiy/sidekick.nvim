@@ -34,13 +34,63 @@ local function clean_status_value(value)
   return vim.trim(value)
 end
 
----@param pane_id string
+---@param value string
+---@return string
+local function single_line(value)
+  return vim.trim((value:gsub("%s+", " ")))
+end
+
+---@param value string
 ---@return string?
-local function codex_thread_title(pane_id)
-  local lines = Util.exec({ "tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-200" }, { notify = false })
-  if not lines then
+local function decode_hex(value)
+  value = vim.trim(value)
+  if value == "" or #value % 2 ~= 0 or value:find("[^%x]") then
     return
   end
+  return (value:gsub("..", function(byte)
+    return string.char(tonumber(byte, 16))
+  end))
+end
+
+---@return string?
+local function codex_state_db()
+  local root = vim.env.CODEX_ROOT or (vim.fn.expand("~") .. "/.codex")
+  local path = root .. "/state_5.sqlite"
+  return vim.fn.filereadable(path) == 1 and path or nil
+end
+
+---@param session_id string
+---@return string?
+local function codex_title_from_state(session_id)
+  local db = codex_state_db()
+  if not db or vim.fn.executable("sqlite3") ~= 1 then
+    return
+  end
+  local sql = ("SELECT hex(title) FROM threads WHERE id = '%s' AND archived = 0 LIMIT 1;"):format(
+    session_id:gsub("'", "''")
+  )
+  local lines = Util.exec({ "sqlite3", "-readonly", db, sql }, { notify = false })
+  local title = lines and lines[1] and decode_hex(lines[1])
+  return title and title ~= "" and single_line(title) or nil
+end
+
+---@param lines string[]
+---@return string?
+local function codex_session_id(lines)
+  for i = #lines, 1, -1 do
+    local line = lines[i]
+    if line:find("Session:", 1, true) then
+      local session_id = line:match("(%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x)")
+      if session_id then
+        return session_id
+      end
+    end
+  end
+end
+
+---@param lines string[]
+---@return string?
+local function codex_thread_name(lines)
   for i = #lines, 1, -1 do
     local start, finish = lines[i]:find("Thread name:", 1, true)
     if start then
@@ -54,6 +104,20 @@ local function codex_thread_title(pane_id)
       end
     end
   end
+end
+
+---@param pane_id string
+---@return {session_id?:string,title?:string}
+local function codex_thread_info(pane_id)
+  local lines = Util.exec({ "tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-200" }, { notify = false })
+  if not lines then
+    return {}
+  end
+  local session_id = codex_session_id(lines)
+  return {
+    session_id = session_id,
+    title = (session_id and codex_title_from_state(session_id)) or codex_thread_name(lines),
+  }
 end
 
 ---@return sidekick.cli.terminal.Cmd?
@@ -108,7 +172,9 @@ function M:spawn(cmd)
     self.tmux_pane_id = pane.id
 
     self.mux_session = pane_display_name(pane.id) or pane.session_name
-    self.title = self.tool.name == "codex" and codex_thread_title(pane.id) or nil
+    local codex = self.tool.name == "codex" and codex_thread_info(pane.id) or {}
+    self.codex_session_id = codex.session_id
+    self.title = codex.title
     self.tmux_pid = pane.pid
     self.started = true
   end
@@ -184,6 +250,7 @@ function M.sessions()
         if tool:is_proc(proc) then
           local pids = Procs.pids(pane.pid)
           vim.list_extend(pids, clients[pane.session_id] or {})
+          local codex = tool.name == "codex" and codex_thread_info(pane.id) or {}
 
           ret[#ret + 1] = {
             id = pane.skid,
@@ -192,7 +259,8 @@ function M.sessions()
             tmux_pane_id = pane.id,
             tmux_pid = pane.pid,
             mux_session = pane_display_name(pane.id) or pane.session_name,
-            title = tool.name == "codex" and codex_thread_title(pane.id) or nil,
+            codex_session_id = codex.session_id,
+            title = codex.title,
             pids = pids,
           }
           return true
@@ -246,5 +314,12 @@ function M:dump()
     Util.exec({ "tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-" .. Config.cli.mux.dump, "-E", "-", "-e" })
   return ret
 end
+
+M._test = {
+  codex_session_id = codex_session_id,
+  codex_thread_name = codex_thread_name,
+  codex_title_from_state = codex_title_from_state,
+  decode_hex = decode_hex,
+}
 
 return M
