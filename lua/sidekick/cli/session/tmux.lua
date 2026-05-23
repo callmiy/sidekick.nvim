@@ -11,21 +11,49 @@ local PANE_FORMAT =
   "#{session_id}:#{pane_id}:#{pane_pid}:#{session_name}:#{?pane_current_path,#{pane_current_path},#{pane_start_path}}"
 
 ---@param pane_id string
----@return string? display_name, string? title
-local function pane_info(pane_id)
+---@return string?
+local function pane_display_name(pane_id)
   local lines = Util.exec({
     "tmux",
     "display-message",
     "-p",
     "-t",
     pane_id,
-    "#{session_name}:#{window_index}.#{pane_index}::#{pane_title}",
+    "#{session_name}:#{window_index}.#{pane_index}",
   }, { notify = false })
   if not lines or not lines[1] then
     return
   end
-  local display_name, title = lines[1]:match("^(.-)::(.*)$")
-  return display_name and display_name:gsub("%s+$", ""), title
+  return lines[1]:gsub("%s+$", "")
+end
+
+---@param value string
+---@return string
+local function clean_status_value(value)
+  value = value:gsub("[│┃┆┊|].*$", "")
+  return vim.trim(value)
+end
+
+---@param pane_id string
+---@return string?
+local function codex_thread_title(pane_id)
+  local lines = Util.exec({ "tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-200" }, { notify = false })
+  if not lines then
+    return
+  end
+  for i = #lines, 1, -1 do
+    local start, finish = lines[i]:find("Thread name:", 1, true)
+    if start then
+      local prefix = lines[i]:sub(1, start - 1)
+      local marker = prefix:gsub("%s", "")
+      if marker == "" or marker == "│" or marker == "|" then
+        local title = clean_status_value(lines[i]:sub(finish + 1))
+        if title ~= "" then
+          return title
+        end
+      end
+    end
+  end
 end
 
 ---@return sidekick.cli.terminal.Cmd?
@@ -79,9 +107,8 @@ function M:spawn(cmd)
     self.id = pane.skid
     self.tmux_pane_id = pane.id
 
-    local display_name, title = pane_info(pane.id)
-    self.mux_session = display_name or pane.session_name
-    self.title = title
+    self.mux_session = pane_display_name(pane.id) or pane.session_name
+    self.title = self.tool.name == "codex" and codex_thread_title(pane.id) or nil
     self.tmux_pid = pane.pid
     self.started = true
   end
@@ -158,16 +185,14 @@ function M.sessions()
           local pids = Procs.pids(pane.pid)
           vim.list_extend(pids, clients[pane.session_id] or {})
 
-          local display_name, title = pane_info(pane.id)
-
           ret[#ret + 1] = {
             id = pane.skid,
             cwd = proc.cwd or pane.cwd,
             tool = tool,
             tmux_pane_id = pane.id,
             tmux_pid = pane.pid,
-            mux_session = display_name or pane.session_name,
-            title = title,
+            mux_session = pane_display_name(pane.id) or pane.session_name,
+            title = tool.name == "codex" and codex_thread_title(pane.id) or nil,
             pids = pids,
           }
           return true
